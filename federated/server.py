@@ -19,7 +19,7 @@ class FederatedServer:
             clients.append(Client(idx, Trainable(self.config, client_train, client_val)))
         return ClientManager(clients, self.config)
 
-    def train_environment(self, loss_fn, save_results):
+    def train_environment(self, logger, loss_fn, save_results):
         """Run the federated learning process"""
         test_results = None
         for round_num in range(self.config.COMMUNICATION_ROUNDS):
@@ -33,16 +33,16 @@ class FederatedServer:
 
             # Train selected clients
             client_updates, client_sizes = self.client_manager.train_selected_clients(
-                self.global_model.model, loss_fn, save_results=save_results, communication_round=round_num)
+                logger, self.global_model.model, loss_fn, save_results=save_results, communication_round=round_num)
 
             # Aggregate updates
             self.global_model.model = self.aggregator.aggregate(
                 self.global_model.model, client_updates, client_sizes)
 
-    def evaluate_global_model(self, loss_fn, save_results):
+    def evaluate_global_model(self, logger, loss_fn, save_results):
         # Evaluate global model
         if self.config.VERBOSE: print(f'------------ Testing global model ------------')
-        test_results = evaluate_model(self.global_model, loss_fn, self.test_loader, save_results=save_results)
+        test_results = evaluate_model(logger, self.global_model, loss_fn, self.test_loader, save_results=save_results)
         return test_results
 
 

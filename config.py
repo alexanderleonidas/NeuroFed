@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, asdict
 @dataclass
 class BaseConfig:
     LAYER_SIZES: list[int] = field(default_factory=lambda: [784, 512, 216, 10])
-    EPOCHS: int = 200
+    EPOCHS: int = 300
     BATCH_SIZE: int = 128
     VERBOSE: bool = True
     SEED: int = 42

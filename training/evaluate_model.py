@@ -2,12 +2,14 @@ import torch
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
 
 
-def evaluate_model(trainable, loss_fn, test_loader, validation=False, save_results=False):
+def evaluate_model(logger, trainable, loss_fn, test_loader, validation=False, save_results=False):
     """
     Evaluates a trained model on the given test dataset and computes various performance
     metrics including loss, accuracy, precision, recall, F1 score, and the confusion matrix.
     The results can be optionally displayed and saved if specified.
 
+    :param logger: An object encapsulating the experiment logger.
+    :type logger: ExperimentLogger.
     :param trainable: The trainable object containing the model and configuration settings.
     :type trainable: Trainable.
     :param loss_fn: The loss function used to compute the test loss.
@@ -57,8 +59,7 @@ def evaluate_model(trainable, loss_fn, test_loader, validation=False, save_resul
         else:
             print(f'Validation Loss: {test_loss:.4f} | Validation Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
 
-    # if save_results:
-    #     save_test_results(model.name, loss.item(), accuracy, precision, recall, f1, conf_matrix)
-    #     if BaseConfig.VERBOSE: print(f'Test results saved to {PERFORMANCE_RESULTS_PATH}{model.name}_test_results.csv')
+    if save_results and not validation:
+        logger.save_test_results(trainable.model.name, test_loss, accuracy, precision, recall, f1, conf_matrix)
 
     return test_loss, accuracy, precision, recall, f1, conf_matrix

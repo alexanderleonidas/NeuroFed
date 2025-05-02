@@ -1,36 +1,54 @@
 from models.feedback_optimizer import DirectFeedbackAlignmentOptimizer
 from models.perturbation_optimizer import PerturbationOptimizer
 from .evaluate_model import evaluate_model
-from utils import save_training_results
 import time
 import torch
 import psutil
 
 
-def train_single_model(trainable, loss_fn, epochs, save_results=False, client_id=None, communication_round=None):
+def train_single_model(logger, trainable, loss_fn, client_id=None, communication_round=None, save_results=False, save_model=False):
     """
-    Trains a single model for a specified number of epochs, calculates relevant metrics
-    during training, and optionally saves the model and/or results.
+    Trains a single model, calculates relevant metrics during training, and optionally saves the model and/or results.
 
+    :param logger: An object encapsulating the experiment logger.
+    :type logger: ExperimentLogger.
     :param trainable: An object encapsulating the model, its configurations, loaders,
         and optimizer. Must have attributes like `model`, `config`, `train_loader`,
         `val_loader`, `device`, and `optimizer`.
     :type trainable: Trainable.
     :param loss_fn: The loss function is used to calculate the loss during training.
         Defines the criterion for optimization.
-    :param epochs: The number of training iterations (epochs) to perform.
-    :type epochs: int
-    :param save_results: Boolean flag indicating whether the results (e.g., metrics)
-        should be saved after each validation iteration. Defaults to False.
-    :type save_results: bool
     :param client_id: The id of the client to use for saving results. Defaults to None.
     :type client_id: int, optional
     :param communication_round: The communication round number for saving results.
     :type communication_round: int, optional
+    :param save_results: Boolean flag indicating whether the results (e.g., metrics)
+        should be saved after each validation iteration. Defaults to False.
+    :type save_results: bool
+    :param save_model: Boolean flag indicating whether the model should be saved
+    :type save_model: bool
     :return: None
     """
+    epochs = trainable.config.EPOCHS
+    start_epoch = 0
+    best_val_accuracy = 0.0
+
+    # Check if we're continuing training
+    if logger.run_id:
+        training_df = logger.load_training_results()
+        if not training_df.empty:
+            start_epoch = training_df['epoch'].max() + 1
+            print(f"Continuing from epoch {start_epoch}")
+
+    # Try to load a saved model for the current run
+    model_loaded = logger.load_model(trainable.model)
+    if model_loaded:
+        print(f"Continuing training from run {logger.run_id}")
+    else:
+        print(f"Starting new training run {logger.run_id}")
+
     training_time = 0
-    for t in range(epochs):
+    for t in range(start_epoch, epochs, 1):
         if trainable.config.VERBOSE: print(f"--------- Epoch {t + 1} / {epochs} ----------")
         train_loss, correct, cpu = 0, 0, 0
         trainable.model.train()
@@ -72,10 +90,16 @@ def train_single_model(trainable, loss_fn, epochs, save_results=False, client_id
             print(f'Training Loss: {epoch_loss:.4f} | Training Accuracy: {epoch_accuracy:.2f}% | Time: {epoch_time:.3f}s | CPU usage: {epoch_cpu:.2f}%'
                   f"{f' | ε: {trainable.privacy_engine.get_epsilon(trainable.config.DELTA)}' if trainable.config.MODEL_TYPE == 'DP' else ''}")
         trainable.model.eval()
-        val_results = evaluate_model(trainable, loss_fn, trainable.val_loader, True, save_results)
+        val_results = evaluate_model(logger, trainable, loss_fn, trainable.val_loader, True, save_results)
 
+        if val_results[1] > best_val_accuracy:
+            best_val_accuracy = val_results[1]
+            if save_model:
+                logger.save_model(trainable.model, client_id)
+                if trainable.config.VERBOSE:
+                    print(f"Model saved in {trainable.config.SAVED_MODELS_PATH}")
         if save_results:
-            save_training_results(trainable.config, t, epoch_loss, epoch_accuracy, val_results[0], val_results[1], epoch_time, epoch_cpu, client_id, communication_round)
+            logger.save_training_results(t, epoch_loss, epoch_accuracy, val_results[0], val_results[1], epoch_time, epoch_cpu, client_id, communication_round)
     if trainable.config.VERBOSE:
         print("-" * 20)
         print('Training Completed...')

@@ -9,7 +9,7 @@ class Client:
         self.client_id = client_id
         self.trainable = trainable
 
-    def train_local_model(self, global_model, loss_fn, epochs, save_results, communication_round):
+    def train_local_model(self, logger, global_model, loss_fn, save_results, communication_round):
         """Train the client's local model starting from the global model weights"""
         # Copy parameters from the global model to the client's local model
         global_state = copy.deepcopy(global_model.state_dict())
@@ -27,7 +27,7 @@ class Client:
             self.trainable.model.load_state_dict(global_state)
 
         # Training loop
-        train_single_model(self.trainable, loss_fn, epochs, save_results=save_results, client_id=self.client_id, communication_round=communication_round)
+        train_single_model(logger, self.trainable, loss_fn, save_results=save_results, client_id=self.client_id, communication_round=communication_round)
 
         # Return model updates and number of samples - ensure a consistent format
         if hasattr(self.trainable.model, "_module"):
@@ -54,14 +54,14 @@ class ClientManager:
         self.selected_clients = random.sample(self.clients, num_clients_to_select)
         return self.selected_clients
 
-    def train_selected_clients(self, global_model, loss_fn, save_results, communication_round):
+    def train_selected_clients(self, logger, global_model, loss_fn, save_results, communication_round):
         """Train all selected clients and return their updates"""
         client_updates = []
         client_sizes = []
 
         for client in self.selected_clients:
             if self.config.VERBOSE: print(f'--------------- Training client with ID {client.client_id} ---------------')
-            update, size = client.train_local_model(global_model, loss_fn, self.config.EPOCHS, save_results, communication_round)
+            update, size = client.train_local_model(logger, global_model, loss_fn, save_results, communication_round)
             client_updates.append(update)
             client_sizes.append(size)
 
