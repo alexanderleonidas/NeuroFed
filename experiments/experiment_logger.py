@@ -95,6 +95,13 @@ class ExperimentLogger:
 
         return os.path.join(self.layer_dir, filename)
 
+    def create_new_run(self):
+        """
+        Create a new run ID for the current experiment. This is useful for starting
+        a new experiment without overwriting previous results.
+        """
+        self.run_id = self._generate_run_id()
+
     def save_training_results(self, epoch, train_loss, train_accuracy, val_loss, val_accuracy,
                               time_taken, cpu, client_id=None, communication_round=None):
         """
@@ -323,7 +330,7 @@ class ExperimentLogger:
         :type config: BaseConfig
         :param client_id: Identifier for the client in federated training
         :type client_id: Optional[int]
-        :return: ExperimentManager instance or None if no previous runs found
+        :return: ExperimentManager instance or a new instance if no previous runs are found
         :rtype: Optional[ExperimentManager]
         """
         run_id = cls.find_latest_run(config, client_id)
@@ -334,7 +341,7 @@ class ExperimentLogger:
             if getattr(config, 'VERBOSE', False):
                 print("No previous runs found. A new ExperimentManager will be created.")
 
-            return cls(config)
+            return None
 
     @classmethod
     def load_all_runs(cls, config):

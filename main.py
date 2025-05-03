@@ -20,6 +20,6 @@ def main():
 
     ########### Run file ###########
     # experiment.run(num_experiments)
-    experiment.plot_from_saved_results()
+    experiment.plot_from_saved_results2()
 if __name__ == "__main__":
     main()

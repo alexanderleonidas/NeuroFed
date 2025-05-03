@@ -31,14 +31,19 @@ def train_single_model(logger, trainable, loss_fn, client_id=None, communication
     """
     epochs = trainable.config.EPOCHS
     start_epoch = 0
-    best_val_accuracy = 0.0
 
-    # Check if we're continuing training
-    if logger.run_id:
+    # Check if we're continuing training else create a new run
+    check_logger = logger.from_latest_run(trainable.config)
+    if check_logger is not None:
+        logger = check_logger
         training_df = logger.load_training_results()
         if not training_df.empty:
             start_epoch = training_df['epoch'].max() + 1
-            print(f"Continuing from epoch {start_epoch}")
+            if start_epoch >= epochs:
+                logger.create_new_run()
+                start_epoch = 0
+            else:
+                print(f"Continuing from epoch {start_epoch}")
 
     # Try to load a saved model for the current run
     model_loaded = logger.load_model(trainable.model)
@@ -92,12 +97,8 @@ def train_single_model(logger, trainable, loss_fn, client_id=None, communication
         trainable.model.eval()
         val_results = evaluate_model(logger, trainable, loss_fn, trainable.val_loader, True, save_results)
 
-        if val_results[1] > best_val_accuracy:
-            best_val_accuracy = val_results[1]
-            if save_model:
-                logger.save_model(trainable.model, client_id)
-                if trainable.config.VERBOSE:
-                    print(f"Model saved in {trainable.config.SAVED_MODELS_PATH}")
+        if save_model:
+            logger.save_model(trainable.model, client_id)
         if save_results:
             logger.save_training_results(t, epoch_loss, epoch_accuracy, val_results[0], val_results[1], epoch_time, epoch_cpu, client_id, communication_round)
     if trainable.config.VERBOSE:
