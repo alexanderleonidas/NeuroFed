@@ -5,7 +5,7 @@ import fnmatch
 import re
 import torch
 import pandas as pd
-from config import FederatedConfig
+from config import FederatedConfig, DifferentialPrivacyConfig
 
 
 class ExperimentLogger:
@@ -13,17 +13,6 @@ class ExperimentLogger:
     A class that manages machine learning experiments, including tracking metrics,
     saving/loading models, and organizing results. This class centralizes experiment
     management functions and maintains consistency across different experiment runs.
-
-    Attributes:
-        config (BaseConfig): Configuration object with experiment settings
-        run_id (int): Unique identifier for the current experiment run
-        is_federated (bool): Whether this is a federated learning experiment
-        verbose (bool): Whether to print detailed information during operations
-        results_path (str): Path to the directory where results are stored
-        models_path (str): Path to the directory where models are stored
-        layer_dir (str): Path to the directory for the current layer configuration
-        exp_type (str): Type of experiment (e.g., 'Centralised', 'Federated')
-        model_type (str): Type of model being used in the experiment
     """
 
     def __init__(self, config, run_id=None):
@@ -36,7 +25,7 @@ class ExperimentLogger:
         :type run_id: Optional[int]
         """
         self.config = config
-        self.run_id = run_id if run_id is not None else self._generate_run_id()
+        self.run_id = run_id if run_id is not None else int(time.time())
         self.is_federated = isinstance(config, FederatedConfig)
         self.verbose = getattr(config, 'VERBOSE', False)
 
@@ -52,18 +41,14 @@ class ExperimentLogger:
         # Set experiment and model types
         self.exp_type = getattr(config, 'EXPERIMENT_TYPE', 'Centralised')
         self.model_type = config.MODEL_TYPE
+        self.dataset = getattr(config, 'DATASET', '')
+        if self.is_federated:
+            self.iid = '_iid' if getattr(config, 'IID', False) else '_non-iid'
+        else:
+            self.iid = ''
 
         if self.verbose:
             print(f"Initialized experiment logger for run {self.run_id}")
-
-    def _generate_run_id(self):
-        """
-        Generate a unique run ID based on the current timestamp.
-
-        :return: Integer timestamp to serve as the run ID
-        :rtype: int
-        """
-        return int(time.time())
 
     def _get_results_filepath(self, file_type="training"):
         """
@@ -71,10 +56,17 @@ class ExperimentLogger:
 
         :param file_type: Type of results ('training' or 'test')
         :type file_type: str
-        :return: Full path to the results file
+        :return: The full results filepath
         :rtype: str
         """
-        filename = f"{self.exp_type}_{self.model_type}_run{self.run_id}_{file_type}_results.csv"
+
+        if isinstance(self.config, DifferentialPrivacyConfig):
+            eps = str(self.config.EPSILON)
+            eps.replace('.', 'p')
+            addition = f"_eps{eps}"
+        else:
+            addition = ''
+        filename = f"{self.exp_type}_{self.model_type}{addition}_run{self.run_id}_{file_type}_{self.dataset}{self.iid}_results.csv"
         return os.path.join(self.results_path, filename)
 
     def _get_model_filepath(self, client_id=None):
@@ -86,24 +78,23 @@ class ExperimentLogger:
         :return: Full path to the model file
         :rtype: str
         """
+        os.makedirs(self.layer_dir, exist_ok=True)
         if client_id is not None:
-            filename = f"{self.model_type}_run{self.run_id}_client{client_id}.pth"
+            return os.path.join(self.layer_dir, f"{self.model_type}_run{self.run_id}_client{client_id}_{self.dataset}{self.iid}.pth")
         elif self.is_federated:
-            filename = f"{self.model_type}_run{self.run_id}_global.pth"
+            return os.path.join(self.layer_dir, f"{self.model_type}_run{self.run_id}_global_{self.dataset}{self.iid}.pth")
         else:
-            filename = f"{self.model_type}_run{self.run_id}.pth"
-
-        return os.path.join(self.layer_dir, filename)
+            return os.path.join(self.layer_dir, f"{self.model_type}_run{self.run_id}_{self.dataset}{self.iid}.pth")
 
     def create_new_run(self):
         """
         Create a new run ID for the current experiment. This is useful for starting
         a new experiment without overwriting previous results.
         """
-        self.run_id = self._generate_run_id()
+        self.run_id = int(time.time())
 
     def save_training_results(self, epoch, train_loss, train_accuracy, val_loss, val_accuracy,
-                              time_taken, cpu, client_id=None, communication_round=None):
+                              time_taken, cpu, precision, recall, f1, client_id=None, communication_round=None):
         """
         Save training results to a CSV file for the current experiment run.
 
@@ -121,6 +112,12 @@ class ExperimentLogger:
         :type time_taken: float
         :param cpu: CPU usage during the epoch or communication round
         :type cpu: float
+        :param precision: Precision on the training dataset
+        :type precision: float
+        :param recall: Recall on the validation dataset
+        :type recall: float
+        :param f1: F1 on the validation dataset
+        :type f1: float
         :param client_id: Identifier for the client in federated training
         :type client_id: Optional[int]
         :param communication_round: Current communication round in federated training
@@ -137,25 +134,25 @@ class ExperimentLogger:
                 if client_id is None:
                     writer.writerow(
                         ["run_id", "epoch", "model_name", "train_loss", "train_accuracy",
-                         "val_loss", "val_accuracy", "time_taken", "cpu_usage"])
+                         "val_loss", "val_accuracy", "time_taken", "cpu_usage", "precision", "recall", "f1"])
                 else:
                     writer.writerow(
                         ["run_id", "communication_round", "client", "epoch", "model_name",
                          "train_loss", "train_accuracy", "val_loss", "val_accuracy",
-                         "time_taken", "cpu_usage"])
+                         "time_taken", "cpu_usage", "precision", "recall", "f1"])
 
             # Write the data row
             if client_id is None:
                 writer.writerow(
                     [self.run_id, epoch, self.model_type, train_loss, train_accuracy,
-                     val_loss, val_accuracy, time_taken, cpu])
+                     val_loss, val_accuracy, time_taken, cpu, precision, recall, f1])
             else:
                 writer.writerow(
                     [self.run_id, communication_round, client_id, epoch, self.model_type,
-                     train_loss, train_accuracy, val_loss, val_accuracy, time_taken, cpu])
+                     train_loss, train_accuracy, val_loss, val_accuracy, time_taken, cpu, precision, recall, f1])
 
-        if is_first_entry and self.verbose:
-            print(f"Created new training results file for run {self.run_id}: {os.path.basename(results_file)}")
+        # if is_first_entry and self.verbose:
+        #     print(f"Created new training results file for run {self.run_id}: {os.path.basename(results_file)}")
 
         return self
 
@@ -210,8 +207,8 @@ class ExperimentLogger:
         model_path = self._get_model_filepath(client_id)
         torch.save(model.state_dict(), model_path)
 
-        if self.verbose:
-            print(f"Saved model for run {self.run_id} to {model_path}")
+        # if self.verbose:
+        #     print(f"Saved model for run {self.run_id} to {model_path}")
 
         return self
 
@@ -236,8 +233,8 @@ class ExperimentLogger:
 
             return True
         else:
-            if self.verbose:
-                print(f"No saved model found at {model_path}")
+            # if self.verbose:
+            #     print(f"No saved model found at {model_path}")
 
             return False
 
@@ -338,8 +335,8 @@ class ExperimentLogger:
         if run_id is not None:
             return cls(config, run_id)
         else:
-            if getattr(config, 'VERBOSE', False):
-                print("No previous runs found. A new ExperimentManager will be created.")
+            # if getattr(config, 'VERBOSE', False):
+            #     print("No previous runs found.")
 
             return None
 
@@ -361,8 +358,14 @@ class ExperimentLogger:
             return {'training': pd.DataFrame(), 'test': pd.DataFrame()}
 
         # Patterns for training and test results
-        training_pattern = f"{exp_type}_{model_type}_run*_training_results.csv"
-        test_pattern = f"{exp_type}_{model_type}_run*_test_results.csv"
+        if isinstance(config, DifferentialPrivacyConfig):
+            eps = str(config.EPSILON)
+            eps.replace('.', 'p')
+            addition = f'_eps{eps}'
+        else:
+            addition = ''
+        training_pattern = f"{exp_type}_{model_type}{addition}_run*_training_results.csv"
+        test_pattern = f"{exp_type}_{model_type}{addition}_run*_test_results.csv"
 
         # Find and load all files
         all_files = os.listdir(results_path)

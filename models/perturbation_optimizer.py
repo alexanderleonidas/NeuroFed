@@ -33,7 +33,9 @@ class PerturbationOptimizer(torch.optim.Optimizer):
             sigma = group['sigma']
             for param_idx, param in enumerate(group['params']):
                 if param.requires_grad:
-                    update = lr * (noisy_loss - loss_before) / (sigma ** 2)
-                    param.sub_(update * noise[group_idx][param_idx])
+                    grad =  (1/ (2.0*sigma*sigma)) * noise[group_idx][param_idx] * (noisy_loss - loss_before)
+                    param.sub_(noise[group_idx][param_idx])
+                    param.sub_(lr * grad)
 
         return loss_before
+

@@ -26,40 +26,44 @@ def evaluate_model(logger, trainable, loss_fn, test_loader, validation=False, sa
         - f1: The weighted F1 score of the model's predictions.
         - conf_matrix: The confusion matrix for the model's predictions.
     """
-    trainable.model.eval()
-    size = len(test_loader.dataset)
-    test_loss, correct = 0, 0
-    correct = 0
-    all_labels = []
-    all_predictions = []
-    with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(trainable.device), target.to(trainable.device)
-            pred = trainable.model.forward(data)
-            test_loss += loss_fn(pred, target).item()
-            _, predicted = torch.max(pred, 1)
-            correct += (predicted == target).sum().item()
-            all_labels.extend(target.cpu().numpy())
-            all_predictions.extend(predicted.cpu().numpy())
+    if test_loader is None:
+        return None, None, None, None, None, None
+    else:
+        trainable.model.eval()
+        size = len(test_loader.dataset)
+        test_loss, correct = 0, 0
+        all_labels = []
+        all_predictions = []
+        with torch.no_grad():
+            for data, target in test_loader:
+                data, target = data.to(trainable.device), target.to(trainable.device)
+                pred = trainable.model.forward(data)
+                test_loss += loss_fn(pred, target).item()
+                _, predicted = torch.max(pred, 1)
+                correct += (predicted == target).sum().item()
+                all_labels.extend(target.cpu().numpy())
+                all_predictions.extend(predicted.cpu().numpy())
 
 
-    test_loss /= len(test_loader)
-    accuracy = 100. * correct / size
-    precision = precision_score(all_labels, all_predictions, average='weighted', zero_division=0)
-    recall = recall_score(all_labels, all_predictions, average='weighted', zero_division=0)
-    f1 = f1_score(all_labels, all_predictions, average='weighted', zero_division=0)
-    conf_matrix = confusion_matrix(all_labels, all_predictions)
+        test_loss /= len(test_loader)
+        accuracy = 100. * correct / size
+        precision = precision_score(all_labels, all_predictions, average='weighted', zero_division=0)
+        recall = recall_score(all_labels, all_predictions, average='weighted', zero_division=0)
+        f1 = f1_score(all_labels, all_predictions, average='weighted', zero_division=0)
+        conf_matrix = confusion_matrix(all_labels, all_predictions)
 
-    if trainable.config.VERBOSE:
-        if not validation:
-            print(f'Test Loss: {test_loss:.4f} | Test Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
-            print('Confusion Matrix:')
-            print(conf_matrix)
-            print("-" * 20)
-        else:
-            print(f'Validation Loss: {test_loss:.4f} | Validation Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
+        if trainable.config.VERBOSE:
+            if not validation:
+                print(f'Test Loss: {test_loss:.4f} | Test Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
+                print('Confusion Matrix:')
+                print(conf_matrix)
+                print("-" * 20)
+            else:
+                # print(f'Validation Loss: {test_loss:.4f} | Validation Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
+                # print('val', f'{test_loss:.4f}', f'{accuracy:.2f}', sep='\t\t')
+                pass
 
-    if save_results and not validation:
-        logger.save_test_results(trainable.model.name, test_loss, accuracy, precision, recall, f1, conf_matrix)
+        if save_results and not validation:
+            logger.save_test_results(test_loss, accuracy, precision, recall, f1, conf_matrix)
 
-    return test_loss, accuracy, precision, recall, f1, conf_matrix
+        return test_loss, accuracy, precision, recall, f1, conf_matrix

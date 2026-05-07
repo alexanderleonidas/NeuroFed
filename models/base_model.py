@@ -13,12 +13,9 @@ class FlexibleNet(nn.Module):
         for i in range(self.num_layers):
             layer = nn.Linear(layer_sizes[i], layer_sizes[i+1])
             setattr(self, f'fc{i+1}', layer)
-        self._init_weights()
-
-    def _init_weights(self):
-        for layer in self.children():
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
+        self.inputs = None
+        self.activations = None
+        self.out = None
 
     def forward(self, x):
         x = self.flatten(x)
@@ -28,9 +25,14 @@ class FlexibleNet(nn.Module):
         for i in range(1, self.num_layers):
             layer = getattr(self, f'fc{i}')
             x = layer(x)
-            x = f.relu(x)
+            if self.name == 'PB' or self.name:
+                x = f.tanh(x)
+                self.activations.append((1-x*x).float())
+            else:
+                x = f.relu(x)
+                self.activations.append((x > 0).float())
             self.inputs.append(x)
-            self.activations.append((x > 0).float())
+
 
         # Last layer (output layer, no activation)
         x = getattr(self, f'fc{self.num_layers}')(x)

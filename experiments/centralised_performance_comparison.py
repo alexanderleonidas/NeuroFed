@@ -1,10 +1,13 @@
-import os
+import time
+from copy import copy
+import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import torch.nn as nn
 from config import *
 from experiments.experiment_logger import ExperimentLogger
+from experiments.privacy_experiment import PrivacyExperiment
 from models.trainable import Trainable
 from training.train_single_model import train_single_model
 from training.evaluate_model import evaluate_model
@@ -12,10 +15,11 @@ from data.centralised_data import CentralisedDataManager
 
 
 class CentralisedPerformanceComparison:
-    def __init__(self, configs: list[BaseConfig], save_model=False, save_results=False, plot_results=False):
+    def __init__(self, configs: list[BaseConfig], save_model=False, save_results=False, plot_results=False, perform_attack=False):
         self.save_model = save_model
         self.save_results = save_results
         self.plot_results = plot_results
+        self.perform_attack = perform_attack
         if configs is None or len(configs) == 0:
             raise ValueError("No configurations provided for the experiment. Must provide a list of configuration(s).")
         self.configs = configs
@@ -23,17 +27,33 @@ class CentralisedPerformanceComparison:
     def run(self, num_experiments=1):
         for _ in range(num_experiments):
             loss_fn = nn.CrossEntropyLoss()
+            run_id = str(int(time.time()))
             for c in self.configs:
-                loaders = CentralisedDataManager(c.BATCH_SIZE)
-                train_loader, val_loader, test_loader = loaders.get_loaders()
-                trainable = Trainable(c, train_loader, val_loader)
-                logger = ExperimentLogger(c)
-                if c.VERBOSE: print(f'Creating {trainable.config.NAME} model...')
-                train_single_model(logger, trainable, loss_fn, save_results=self.save_results, save_model=self.save_model)
-                evaluate_model(logger, trainable, loss_fn, test_loader)
+                logger = ExperimentLogger(c, run_id=run_id) if self.save_model or self.save_results else None
+                data = CentralisedDataManager(c.BATCH_SIZE, c.SEED, dataset=c.DATASET)
+                if self.perform_attack:
+                    target_loaders, shadow_loaders, shadow_dataset_name = data.get_privacy_experiment_shadow_loaders(transfer_attack=True)
+                    trainable = Trainable(c, target_loaders[0], target_loaders[1], global_fed_model=False)
+                    if c.VERBOSE: print(f'Creating {trainable.config.NAME} model for {c.DATASET} dataset...')
+                    train_single_model(logger, trainable, loss_fn, save_results=self.save_results, save_model=self.save_model)
+                    evaluate_model(logger, trainable, loss_fn, trainable.val_loader, save_results=self.save_results)
+                    shadow_config = copy(c)
+                    shadow_config.DATASET = shadow_dataset_name if shadow_dataset_name is not None else c.DATASET
+                    attack = PrivacyExperiment(shadow_config, self.save_model, self.save_results, self.plot_results)
+                    if attack.attack_config.ATTACK_TYPE == 'basic':
+                        attack.run_basic_black_box_attack(trainable, shadow_loaders, run_id=run_id)
+                    else:
+                        raise NotImplementedError('Other attack types not implemented yet')
+                else:
+                    train_loader, val_loader, test_loader = data.get_loaders(val_split=0.1)
+                    trainable = Trainable(c, train_loader, val_loader, test_loader, global_fed_model=False)
+                    if c.VERBOSE: print(f'Creating {trainable.config.NAME} model for {c.DATASET} dataset...')
+                    train_single_model(logger, trainable, loss_fn, save_results=self.save_results, save_model=self.save_model)
+                    evaluate_model(logger, trainable, loss_fn, test_loader, save_results=self.save_results)
 
-        if self.plot_results:
-            self.plot_from_saved_results()
+
+            if self.plot_results:
+                self.plot_from_saved_results()
 
     def plot_from_saved_results(self):
         """
@@ -49,27 +69,34 @@ class CentralisedPerformanceComparison:
 
         for c in self.configs:
             try:
-                model_key = c.MODEL_TYPE
+                model_type = c.MODEL_TYPE
+                # Create a unique key for each model configuration, including epsilon for DP models
+                epsilon_str = str(getattr(c, 'EPSILON', 'N/A')) if hasattr(c, 'EPSILON') else ''
+                model_key = f"{model_type}_ε{epsilon_str}" if epsilon_str else model_type
+
                 run_data = ExperimentLogger.load_all_runs(c)
 
                 if run_data is None or 'training' not in run_data or run_data['training'] is None:
-                     print(f"Warning: No 'training' data found for config {c.MODEL_TYPE}. Skipping.")
-                     continue
+                    print(f"Warning: No 'training' data found for config {model_type}. Skipping.")
+                    continue
 
                 df_training = run_data['training']
                 if df_training.empty:
-                     print(f"Warning: Empty 'training' DataFrame for config {c.MODEL_TYPE}. Skipping.")
-                     continue
+                    print(f"Warning: Empty 'training' DataFrame for config {model_type}. Skipping.")
+                    continue
 
                 results[model_key] = df_training
-                epsilon_str = str(getattr(c, 'EPSILON', 'N/A')) if isinstance(c, DifferentialPrivacyConfig) else ''
                 dp_addon[model_key] = f", ε={epsilon_str}" if epsilon_str else ''
                 model_types_found.append(model_key)
-                print(f"Successfully loaded data for {model_key}.")
+                print(f"Successfully loaded data for {model_type}{dp_addon[model_key]}.")
 
             except Exception as e:
                 print(f"Error loading data for config {getattr(c, 'MODEL_TYPE', 'Unknown')}: {e}")
                 continue
+
+        if not results:
+            print("No valid federated results loaded. Cannot generate plots.")
+            return
 
         if not results:
             print("No valid results loaded. Cannot generate plots.")
@@ -94,7 +121,7 @@ class CentralisedPerformanceComparison:
         max_epochs = 0
 
         print("Generating plots...")
-        # --- Plotting Loop (identical to previous version) ---
+        # --- Plotting Loop (identical to a previous version) ---
         for model_type, df_results in results.items():
             print(f"Processing {model_type}...")
             if df_results is None or df_results.empty:
@@ -113,8 +140,9 @@ class CentralisedPerformanceComparison:
                  pass
 
             try:
-                df_results_unique_epoch = df_results.drop_duplicates(subset=['epoch'], keep='last')
-                grouped = df_results_unique_epoch.groupby('epoch')
+                # df_results_unique_epoch = df_results.drop_duplicates(subset=['epoch'], keep='last')
+                # grouped = df_results_unique_epoch.groupby('epoch')
+                grouped = df_results.groupby(['epoch'])
                 stats = grouped.agg(
                     train_loss_mean=('train_loss', 'mean'), train_loss_std=('train_loss', 'std'),
                     val_loss_mean=('val_loss', 'mean'), val_loss_std=('val_loss', 'std'),
@@ -132,40 +160,75 @@ class CentralisedPerformanceComparison:
                 else:
                    continue # Skip if no epochs found after grouping
 
-                label = f"{model_type}{dp_addon.get(model_type, '')}"
+                display_name = model_type.split('_ε')[0] if '_ε' in model_type else model_type
+                label = f"{display_name}{dp_addon.get(model_type, '')}"
                 color = colors.get(model_type, default_color)
                 line_width = 1.8
 
                 # Plot losses
                 if all(col in stats.columns for col in ['train_loss_mean', 'val_loss_mean']):
-                    ax_loss.plot(epochs, stats['train_loss_mean'], color=color, linestyle='-', label=f'{label} - Train', linewidth=line_width)
-                    ax_loss.fill_between(epochs, stats['train_loss_mean'] - stats['train_loss_std'], stats['train_loss_mean'] + stats['train_loss_std'], alpha=0.15, color=color, edgecolor='none')
-                    ax_loss.plot(epochs, stats['val_loss_mean'], color=color, linestyle='--', label=f'{label} - Val', linewidth=line_width)
-                    ax_loss.fill_between(epochs, stats['val_loss_mean'] - stats['val_loss_std'], stats['val_loss_mean'] + stats['val_loss_std'], alpha=0.1, color=color, edgecolor='none')
+                    # Train loss with standard deviation
+                    ax_loss.plot(epochs, stats['train_loss_mean'], color=color, linestyle='-', label=f'{label} - Train',
+                                 linewidth=line_width)
+                    # Ensure std is valid and visible
+                    if 'train_loss_std' in stats.columns and stats['train_loss_std'].notna().any() and not (
+                            stats['train_loss_std'] == 0).all():
+                        ax_loss.fill_between(epochs, stats['train_loss_mean'] - stats['train_loss_std'],
+                                             stats['train_loss_mean'] + stats['train_loss_std'],
+                                             alpha=0.3, color=color, edgecolor='none')
 
-                # Plot accuracies
+                    # Validation loss with standard deviation
+                    ax_loss.plot(epochs, stats['val_loss_mean'], color=color, linestyle='--', label=f'{label} - Val',
+                                 linewidth=line_width)
+                    if 'val_loss_std' in stats.columns and stats['val_loss_std'].notna().any() and not (
+                            stats['val_loss_std'] == 0).all():
+                        ax_loss.fill_between(epochs, stats['val_loss_mean'] - stats['val_loss_std'],
+                                             stats['val_loss_mean'] + stats['val_loss_std'],
+                                             alpha=0.25, color=color, edgecolor='none')
+
+                    # Plot accuracies
                 if all(col in stats.columns for col in ['train_acc_mean', 'val_acc_mean']):
-                    ax_acc.plot(epochs, stats['train_acc_mean'], color=color, linestyle='-', label=f'{label} - Train', linewidth=line_width)
-                    ax_acc.fill_between(epochs, stats['train_acc_mean'] - stats['train_acc_std'], stats['train_acc_mean'] + stats['train_acc_std'], alpha=0.15, color=color, edgecolor='none')
-                    ax_acc.plot(epochs, stats['val_acc_mean'], color=color, linestyle='--', label=f'{label} - Val', linewidth=line_width)
-                    ax_acc.fill_between(epochs, stats['val_acc_mean'] - stats['val_acc_std'], stats['val_acc_mean'] + stats['val_acc_std'], alpha=0.1, color=color, edgecolor='none')
+                    # Train accuracy with standard deviation
+                    ax_acc.plot(epochs, stats['train_acc_mean'], color=color, linestyle='-', label=f'{label} - Train',
+                                linewidth=line_width)
+                    if 'train_acc_std' in stats.columns and stats['train_acc_std'].notna().any() and not (
+                            stats['train_acc_std'] == 0).all():
+                        ax_acc.fill_between(epochs, stats['train_acc_mean'] - stats['train_acc_std'],
+                                            stats['train_acc_mean'] + stats['train_acc_std'],
+                                            alpha=0.3, color=color, edgecolor='none')
 
-                # Plot CPU usage
+                    # Validation accuracy with standard deviation
+                    ax_acc.plot(epochs, stats['val_acc_mean'], color=color, linestyle='--', label=f'{label} - Val',
+                                linewidth=line_width)
+                    if 'val_acc_std' in stats.columns and stats['val_acc_std'].notna().any() and not (
+                            stats['val_acc_std'] == 0).all():
+                        ax_acc.fill_between(epochs, stats['val_acc_mean'] - stats['val_acc_std'],
+                                            stats['val_acc_mean'] + stats['val_acc_std'],
+                                            alpha=0.25, color=color, edgecolor='none')
+
+                    # Plot CPU usage
                 if 'cpu_mean' in stats.columns:
                     ax_cpu.plot(epochs, stats['cpu_mean'], color=color, label=label, linewidth=line_width)
-                    ax_cpu.fill_between(epochs, stats['cpu_mean'] - stats['cpu_std'], stats['cpu_mean'] + stats['cpu_std'], alpha=0.15, color=color, edgecolor='none')
+                    if 'cpu_std' in stats.columns and stats['cpu_std'].notna().any() and not (
+                            stats['cpu_std'] == 0).all():
+                        ax_cpu.fill_between(epochs, stats['cpu_mean'] - stats['cpu_std'],
+                                            stats['cpu_mean'] + stats['cpu_std'],
+                                            alpha=0.3, color=color, edgecolor='none')
 
-                # Plot time taken
+                    # Plot time taken
                 if 'time_mean' in stats.columns:
                     ax_time.plot(epochs, stats['time_mean'], color=color, label=label, linewidth=line_width)
-                    ax_time.fill_between(epochs, stats['time_mean'] - stats['time_std'], stats['time_mean'] + stats['time_std'], alpha=0.15, color=color, edgecolor='none')
-
+                    if 'time_std' in stats.columns and stats['time_std'].notna().any() and not (
+                            stats['time_std'] == 0).all():
+                        ax_time.fill_between(epochs, stats['time_mean'] - stats['time_std'],
+                                             stats['time_mean'] + stats['time_std'],
+                                             alpha=0.3, color=color, edgecolor='none')
             except KeyError as e:
                 print(f"Error processing data for {model_type}: Missing column during aggregation {e}. Check CSV headers.")
                 continue
             except Exception as e:
                 print(f"An unexpected error occurred while processing/plotting data for {model_type}: {e}")
-                traceback.print_exc()
+                # traceback.print_exc()
                 continue
 
         print("Finalizing plots...")
@@ -187,7 +250,7 @@ class CentralisedPerformanceComparison:
                 plt.close(fig)
                 continue
 
-            active_figures.append(fig) # Add figure to list of active ones
+            active_figures.append(fig) # Add a figure to the list of active ones
             ax.set_title(config['title'], fontsize=14, fontweight='bold')
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel(config['ylabel'], fontsize=12)
@@ -224,22 +287,20 @@ class CentralisedPerformanceComparison:
             else:
                 print(f"No labels found for legend on '{config['title']}'.")
 
-        # --- REMOVED Layout Adjustment ---
-        # constrained_layout handles this automatically. Remove the explicit tight_layout/subplots_adjust calls.
-        # print("Adjusting layout and saving...") # No longer needed
 
         # --- Save Plots ---
         if self.save_results and self.configs:
             try:
                 base_results_path = Path(self.configs[0].RESULTS_PATH)
                 plots_path = base_results_path / 'plots'
+                dataset = getattr(self.configs[0], 'DATASET', 'unknown')
                 plots_path.mkdir(parents=True, exist_ok=True)
 
                 save_configs = [
-                    {'fig': fig_loss, 'name': 'centralised_loss_comparison.png'},
-                    {'fig': fig_acc, 'name': 'centralised_accuracy_comparison.png'},
-                    {'fig': fig_cpu, 'name': 'centralised_cpu_usage_comparison.png'},
-                    {'fig': fig_time, 'name': 'centralised_time_comparison.png'},
+                    {'fig': fig_loss, 'name': f'centralised_loss_comparison_{dataset}.png'},
+                    {'fig': fig_acc, 'name': f'centralised_accuracy_comparison_{dataset}.png'},
+                    {'fig': fig_cpu, 'name': f'centralised_cpu_usage_comparison_{dataset}.png'},
+                    {'fig': fig_time, 'name': f'centralised_time_comparison_{dataset}.png'},
                 ]
 
                 for sconf in save_configs:
@@ -259,8 +320,6 @@ class CentralisedPerformanceComparison:
                  print("Error: Could not determine RESULTS_PATH from config. Cannot save plots.")
             except Exception as e:
                 print(f"Error saving plots: {e}")
-                traceback.print_exc()
-
 
         # --- Display Plots ---
         plt.show()

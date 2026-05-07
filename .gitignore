@@ -9,6 +9,10 @@ __pycache__/
 # Distribution / packaging
 .Python
 MNIST/
+EMNIST/
+FashionMNIST/
+PURCHASE/
+acquire-valued-shoppers-challenge/
 results/
 saved_models/
 build/
